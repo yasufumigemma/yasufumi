@@ -148,6 +148,104 @@
           state.csvRowsMap.set(entry.name, parsed.data);
         }
 
+        ZIP 内の <strong>CSV</strong> を読み込み、任意のデータ系列をプルダウンで選んで線グラフ化します。
+      </p>
+
+      <div class="controls">
+        <div class="block">
+          <label for="zipUrl">ZIP URL</label>
+          <input id="zipUrl" type="text" value="https://www.stat-search.boj.or.jp/info/cgpi_m_jp.zip" />
+          <button id="loadRemoteBtn" style="margin-top: 8px">URLから読み込む</button>
+        </div>
+
+        <div class="block">
+          <label for="zipFile">ZIPファイルをローカル選択（CORS回避）</label>
+          <input id="zipFile" type="file" accept=".zip" />
+        </div>
+
+        <div class="block">
+          <label for="csvSelect">CSVファイル</label>
+          <select id="csvSelect" disabled></select>
+        </div>
+
+        <div class="block">
+          <label for="seriesSelect">データ系列（列）</label>
+          <select id="seriesSelect" disabled></select>
+        </div>
+      </div>
+
+      <div id="status">ZIPを読み込んでください。</div>
+      <div class="chart-wrap">
+        <canvas id="lineChart" aria-label="系列の線グラフ"></canvas>
+      </div>
+    </main>
+
+    <script>
+      const state = {
+        csvRowsMap: new Map(),
+        chart: null,
+      };
+
+      const zipUrlInput = document.getElementById("zipUrl");
+      const loadRemoteBtn = document.getElementById("loadRemoteBtn");
+      const zipFileInput = document.getElementById("zipFile");
+      const csvSelect = document.getElementById("csvSelect");
+      const seriesSelect = document.getElementById("seriesSelect");
+      const statusEl = document.getElementById("status");
+      const chartCanvas = document.getElementById("lineChart");
+
+      function setStatus(msg, isError = false) {
+        statusEl.textContent = msg;
+        statusEl.style.color = isError ? "#b42318" : "#1e3a8a";
+      }
+
+      function inferHeaderAndDateColumn(rows) {
+        const maxCols = Math.max(...rows.slice(0, 20).map((r) => r.length), 0);
+        let headerRowIndex = 0;
+        let dateColIndex = 0;
+        let bestScore = -Infinity;
+
+        for (let r = 0; r < Math.min(20, rows.length); r++) {
+          const row = rows[r] || [];
+          let score = 0;
+          for (let c = 0; c < maxCols; c++) {
+            if (typeof row[c] === "string" && row[c].trim()) score += 1;
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            headerRowIndex = r;
+          }
+        }
+
+        const headers = rows[headerRowIndex] || [];
+        const lowerHeaders = headers.map((h) => String(h ?? "").toLowerCase());
+        const maybeDateIdx = lowerHeaders.findIndex((h) =>
+          ["date", "年月", "時点", "year", "month", "period"].some((k) => h.includes(k)),
+        );
+        if (maybeDateIdx >= 0) dateColIndex = maybeDateIdx;
+
+        return { headerRowIndex, dateColIndex };
+      }
+
+      async function parseCsvFromZip(zipBuffer) {
+        const zip = await JSZip.loadAsync(zipBuffer);
+        const csvEntries = Object.values(zip.files)
+          .filter((f) => !f.dir && f.name.toLowerCase().endsWith(".csv"))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        if (csvEntries.length === 0) {
+          throw new Error("ZIP内にCSVファイル（.csv）が見つかりませんでした。");
+        }
+
+        state.csvRowsMap.clear();
+        for (const entry of csvEntries) {
+          const csvText = await entry.async("text");
+          const parsed = Papa.parse(csvText, {
+            skipEmptyLines: true,
+          });
+          state.csvRowsMap.set(entry.name, parsed.data);
+        }
+
         return csvEntries.map((entry) => entry.name);
       }
 
@@ -179,6 +277,25 @@
           seriesSelect.appendChild(opt);
         });
 
+        if (!rows.length) {
+          seriesSelect.disabled = true;
+          return;
+        }
+
+        const { headerRowIndex, dateColIndex } = inferHeaderAndDateColumn(rows);
+        const headers = rows[headerRowIndex] || [];
+
+        headers.forEach((h, idx) => {
+          if (idx === dateColIndex) return;
+          const name = String(h ?? "").trim() || `列${idx + 1}`;
+          const opt = document.createElement("option");
+          opt.value = String(idx);
+          opt.dataset.headerRowIndex = String(headerRowIndex);
+          opt.dataset.dateColIndex = String(dateColIndex);
+          opt.textContent = `${name} (col ${idx + 1})`;
+          seriesSelect.appendChild(opt);
+        });
+
         seriesSelect.disabled = seriesSelect.options.length === 0;
         if (!seriesSelect.disabled) drawSeries();
       }
@@ -201,6 +318,20 @@
           const yNum = Number(yRaw);
           if (!x || yRaw === "" || Number.isNaN(yNum)) continue;
           labels.push(x);
+        if (!selected) return;
+
+        const seriesCol = Number(selected.value);
+        const headerRowIndex = Number(selected.dataset.headerRowIndex);
+        const dateColIndex = Number(selected.dataset.dateColIndex);
+        const dataRows = rows.slice(headerRowIndex + 1);
+
+        const labels = [];
+        const values = [];
+        for (const row of dataRows) {
+          const y = row[seriesCol];
+          const yNum = Number(y);
+          if (y == null || y === "" || Number.isNaN(yNum)) continue;
+          labels.push(String(row[dateColIndex] ?? ""));
           values.push(yNum);
         }
 
