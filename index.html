@@ -70,6 +70,84 @@
     <main class="container">
       <h1>日銀統計 ZIP（CSV）→ 系列選択グラフ</h1>
       <p>
+        ZIP 内の <strong>CSV</strong> を読み込みます。<strong>1行目を年月（横軸）</strong>、
+        <strong>2行目以降をデータ系列（縦方向）</strong>として扱い、選択した系列を線グラフ化します。
+      </p>
+
+      <div class="controls">
+        <div class="block">
+          <label for="zipUrl">ZIP URL</label>
+          <input id="zipUrl" type="text" value="https://www.stat-search.boj.or.jp/info/cgpi_m_jp.zip" />
+          <button id="loadRemoteBtn" style="margin-top: 8px">URLから読み込む</button>
+        </div>
+
+        <div class="block">
+          <label for="zipFile">ZIPファイルをローカル選択（CORS回避）</label>
+          <input id="zipFile" type="file" accept=".zip" />
+        </div>
+
+        <div class="block">
+          <label for="csvSelect">CSVファイル</label>
+          <select id="csvSelect" disabled></select>
+        </div>
+
+        <div class="block">
+          <label for="seriesSelect">データ系列（行）</label>
+          <select id="seriesSelect" disabled></select>
+        </div>
+      </div>
+
+      <div id="status">ZIPを読み込んでください。</div>
+      <div class="chart-wrap">
+        <canvas id="lineChart" aria-label="系列の線グラフ"></canvas>
+      </div>
+    </main>
+
+    <script>
+      const state = {
+        csvRowsMap: new Map(),
+        chart: null,
+      };
+
+      const zipUrlInput = document.getElementById("zipUrl");
+      const loadRemoteBtn = document.getElementById("loadRemoteBtn");
+      const zipFileInput = document.getElementById("zipFile");
+      const csvSelect = document.getElementById("csvSelect");
+      const seriesSelect = document.getElementById("seriesSelect");
+      const statusEl = document.getElementById("status");
+      const chartCanvas = document.getElementById("lineChart");
+
+      function setStatus(msg, isError = false) {
+        statusEl.textContent = msg;
+        statusEl.style.color = isError ? "#b42318" : "#1e3a8a";
+      }
+
+      function decodeCsvText(csvBuffer) {
+        const utf8 = new TextDecoder("utf-8", { fatal: false }).decode(csvBuffer);
+        if (!utf8.includes("�")) {
+          return utf8;
+        }
+        return new TextDecoder("shift_jis", { fatal: false }).decode(csvBuffer);
+      }
+
+      async function parseCsvFromZip(zipBuffer) {
+        const zip = await JSZip.loadAsync(zipBuffer);
+        const csvEntries = Object.values(zip.files)
+          .filter((f) => !f.dir && f.name.toLowerCase().endsWith(".csv"))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        if (csvEntries.length === 0) {
+          throw new Error("ZIP内にCSVファイル（.csv）が見つかりませんでした。");
+        }
+
+        state.csvRowsMap.clear();
+        for (const entry of csvEntries) {
+          const csvBuffer = await entry.async("arraybuffer");
+          const csvText = decodeCsvText(csvBuffer);
+          const parsed = Papa.parse(csvText, { skipEmptyLines: true });
+          state.csvRowsMap.set(entry.name, parsed.data);
+        }
+
         ZIP 内の <strong>CSV</strong> を読み込み、任意のデータ系列をプルダウンで選んで線グラフ化します。
       </p>
 
@@ -185,6 +263,20 @@
       function fillSeriesSelect() {
         const rows = state.csvRowsMap.get(csvSelect.value) || [];
         seriesSelect.innerHTML = "";
+        if (rows.length < 2) {
+          seriesSelect.disabled = true;
+          return;
+        }
+
+        rows.forEach((row, rowIndex) => {
+          if (rowIndex === 0) return;
+          const label = String(row[0] ?? "").trim() || `系列${rowIndex}`;
+          const opt = document.createElement("option");
+          opt.value = String(rowIndex);
+          opt.textContent = `${label} (row ${rowIndex + 1})`;
+          seriesSelect.appendChild(opt);
+        });
+
         if (!rows.length) {
           seriesSelect.disabled = true;
           return;
@@ -211,6 +303,21 @@
       function drawSeries() {
         const rows = state.csvRowsMap.get(csvSelect.value) || [];
         const selected = seriesSelect.selectedOptions[0];
+        if (!selected || rows.length < 2) return;
+
+        const seriesRowIndex = Number(selected.value);
+        const headerRow = rows[0] || [];
+        const seriesRow = rows[seriesRowIndex] || [];
+
+        const labels = [];
+        const values = [];
+
+        for (let col = 1; col < headerRow.length; col++) {
+          const x = String(headerRow[col] ?? "").trim();
+          const yRaw = String(seriesRow[col] ?? "").trim().replace(/,/g, "");
+          const yNum = Number(yRaw);
+          if (!x || yRaw === "" || Number.isNaN(yNum)) continue;
+          labels.push(x);
         if (!selected) return;
 
         const seriesCol = Number(selected.value);
