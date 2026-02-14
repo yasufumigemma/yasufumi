@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>日銀統計ZIP グラフビューア</title>
+    <title>日銀統計ZIP CSV グラフビューア</title>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <style>
       :root {
@@ -25,14 +25,10 @@
         padding: 20px;
         box-shadow: 0 10px 28px rgba(20, 33, 61, 0.1);
       }
-      h1 {
-        margin-top: 0;
-      }
       .controls {
         display: grid;
         gap: 12px;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        margin-bottom: 16px;
       }
       .block {
         border: 1px solid #dbe4ff;
@@ -42,13 +38,12 @@
       }
       label {
         display: block;
-        font-size: 0.9rem;
         margin-bottom: 4px;
+        font-size: 0.9rem;
       }
+      input,
       select,
-      button,
-      input[type="text"],
-      input[type="file"] {
+      button {
         width: 100%;
         padding: 8px;
         border-radius: 8px;
@@ -61,26 +56,21 @@
         font-weight: 700;
         cursor: pointer;
       }
-      button:hover {
-        opacity: 0.92;
-      }
       #status {
-        margin: 6px 0 14px;
+        margin: 12px 0;
         min-height: 1.4em;
         color: #1e3a8a;
       }
-      canvas {
-        max-height: 520px;
+      .chart-wrap {
+        height: 520px;
       }
     </style>
   </head>
   <body>
     <main class="container">
-      <h1>日銀統計 ZIP → 系列選択グラフ</h1>
+      <h1>日銀統計 ZIP（CSV）→ 系列選択グラフ</h1>
       <p>
-        指定ZIP（既定：
-        <code>cgpi_m_jp.zip</code>
-        ）からExcelを読み込み、任意のデータ系列をプルダウンで選んで線グラフを描画します。
+        ZIP 内の <strong>CSV</strong> を読み込み、任意のデータ系列をプルダウンで選んで線グラフ化します。
       </p>
 
       <div class="controls">
@@ -91,13 +81,13 @@
         </div>
 
         <div class="block">
-          <label for="zipFile">ZIPファイルをローカル選択（CORS回避用）</label>
+          <label for="zipFile">ZIPファイルをローカル選択（CORS回避）</label>
           <input id="zipFile" type="file" accept=".zip" />
         </div>
 
         <div class="block">
-          <label for="sheetSelect">シート</label>
-          <select id="sheetSelect" disabled></select>
+          <label for="csvSelect">CSVファイル</label>
+          <select id="csvSelect" disabled></select>
         </div>
 
         <div class="block">
@@ -107,19 +97,21 @@
       </div>
 
       <div id="status">ZIPを読み込んでください。</div>
-      <canvas id="lineChart" aria-label="系列の線グラフ"></canvas>
+      <div class="chart-wrap">
+        <canvas id="lineChart" aria-label="系列の線グラフ"></canvas>
+      </div>
     </main>
 
     <script>
       const state = {
-        workbook: null,
+        csvRowsMap: new Map(),
         chart: null,
       };
 
       const zipUrlInput = document.getElementById("zipUrl");
       const loadRemoteBtn = document.getElementById("loadRemoteBtn");
       const zipFileInput = document.getElementById("zipFile");
-      const sheetSelect = document.getElementById("sheetSelect");
+      const csvSelect = document.getElementById("csvSelect");
       const seriesSelect = document.getElementById("seriesSelect");
       const statusEl = document.getElementById("status");
       const chartCanvas = document.getElementById("lineChart");
@@ -129,37 +121,6 @@
         statusEl.style.color = isError ? "#b42318" : "#1e3a8a";
       }
 
-      async function extractWorkbookFromZipBuffer(zipBuffer) {
-        const zip = await JSZip.loadAsync(zipBuffer);
-        const excelEntry = Object.values(zip.files).find((f) => {
-          const lower = f.name.toLowerCase();
-          return !f.dir && (lower.endsWith(".xlsx") || lower.endsWith(".xls"));
-        });
-
-        if (!excelEntry) {
-          throw new Error("ZIP内にExcelファイル（.xlsx/.xls）が見つかりませんでした。");
-        }
-
-        const excelBuffer = await excelEntry.async("arraybuffer");
-        return XLSX.read(excelBuffer, { type: "array" });
-      }
-
-      function getSheetRows(sheetName) {
-        const ws = state.workbook.Sheets[sheetName];
-        return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
-      }
-
-      function fillSheetSelect() {
-        sheetSelect.innerHTML = "";
-        for (const name of state.workbook.SheetNames) {
-          const opt = document.createElement("option");
-          opt.value = name;
-          opt.textContent = name;
-          sheetSelect.appendChild(opt);
-        }
-        sheetSelect.disabled = false;
-      }
-
       function inferHeaderAndDateColumn(rows) {
         const maxCols = Math.max(...rows.slice(0, 20).map((r) => r.length), 0);
         let headerRowIndex = 0;
@@ -167,7 +128,7 @@
         let bestScore = -Infinity;
 
         for (let r = 0; r < Math.min(20, rows.length); r++) {
-          const row = rows[r];
+          const row = rows[r] || [];
           let score = 0;
           for (let c = 0; c < maxCols; c++) {
             if (typeof row[c] === "string" && row[c].trim()) score += 1;
@@ -188,8 +149,42 @@
         return { headerRowIndex, dateColIndex };
       }
 
+      async function parseCsvFromZip(zipBuffer) {
+        const zip = await JSZip.loadAsync(zipBuffer);
+        const csvEntries = Object.values(zip.files)
+          .filter((f) => !f.dir && f.name.toLowerCase().endsWith(".csv"))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        if (csvEntries.length === 0) {
+          throw new Error("ZIP内にCSVファイル（.csv）が見つかりませんでした。");
+        }
+
+        state.csvRowsMap.clear();
+        for (const entry of csvEntries) {
+          const csvText = await entry.async("text");
+          const parsed = Papa.parse(csvText, {
+            skipEmptyLines: true,
+          });
+          state.csvRowsMap.set(entry.name, parsed.data);
+        }
+
+        return csvEntries.map((entry) => entry.name);
+      }
+
+      function fillCsvSelect(csvNames) {
+        csvSelect.innerHTML = "";
+        for (const name of csvNames) {
+          const opt = document.createElement("option");
+          opt.value = name;
+          opt.textContent = name;
+          csvSelect.appendChild(opt);
+        }
+        csvSelect.disabled = false;
+      }
+
       function fillSeriesSelect() {
-        const rows = getSheetRows(sheetSelect.value);
+        const rows = state.csvRowsMap.get(csvSelect.value) || [];
+        seriesSelect.innerHTML = "";
         if (!rows.length) {
           seriesSelect.disabled = true;
           return;
@@ -197,7 +192,6 @@
 
         const { headerRowIndex, dateColIndex } = inferHeaderAndDateColumn(rows);
         const headers = rows[headerRowIndex] || [];
-        seriesSelect.innerHTML = "";
 
         headers.forEach((h, idx) => {
           if (idx === dateColIndex) return;
@@ -214,17 +208,8 @@
         if (!seriesSelect.disabled) drawSeries();
       }
 
-      function normalizeLabel(v) {
-        if (v == null) return "";
-        if (typeof v === "number" && v > 20000 && v < 70000) {
-          const d = XLSX.SSF.parse_date_code(v);
-          if (d) return `${d.y}-${String(d.m).padStart(2, "0")}`;
-        }
-        return String(v);
-      }
-
       function drawSeries() {
-        const rows = getSheetRows(sheetSelect.value);
+        const rows = state.csvRowsMap.get(csvSelect.value) || [];
         const selected = seriesSelect.selectedOptions[0];
         if (!selected) return;
 
@@ -237,20 +222,20 @@
         const values = [];
         for (const row of dataRows) {
           const y = row[seriesCol];
-          if (y == null || y === "" || Number.isNaN(Number(y))) continue;
-          labels.push(normalizeLabel(row[dateColIndex]));
-          values.push(Number(y));
+          const yNum = Number(y);
+          if (y == null || y === "" || Number.isNaN(yNum)) continue;
+          labels.push(String(row[dateColIndex] ?? ""));
+          values.push(yNum);
         }
 
         if (state.chart) state.chart.destroy();
-
         state.chart = new Chart(chartCanvas, {
           type: "line",
           data: {
             labels,
             datasets: [
               {
-                label: selected.textContent,
+                label: `${csvSelect.value} / ${selected.textContent}`,
                 data: values,
                 borderColor: "#2d6cff",
                 backgroundColor: "rgba(45,108,255,0.15)",
@@ -262,9 +247,7 @@
           options: {
             responsive: true,
             maintainAspectRatio: false,
-            scales: {
-              x: { ticks: { maxTicksLimit: 12 } },
-            },
+            scales: { x: { ticks: { maxTicksLimit: 12 } } },
           },
         });
 
@@ -273,10 +256,10 @@
 
       async function loadZipBuffer(zipBuffer) {
         setStatus("ZIPを解析中...");
-        state.workbook = await extractWorkbookFromZipBuffer(zipBuffer);
-        fillSheetSelect();
+        const csvNames = await parseCsvFromZip(zipBuffer);
+        fillCsvSelect(csvNames);
         fillSeriesSelect();
-        setStatus("読み込み成功。シート・系列を選択できます。");
+        setStatus(`読み込み成功: CSV ${csvNames.length}件`);
       }
 
       loadRemoteBtn.addEventListener("click", async () => {
@@ -307,7 +290,7 @@
         }
       });
 
-      sheetSelect.addEventListener("change", fillSeriesSelect);
+      csvSelect.addEventListener("change", fillSeriesSelect);
       seriesSelect.addEventListener("change", drawSeries);
     </script>
   </body>
