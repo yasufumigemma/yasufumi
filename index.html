@@ -206,9 +206,9 @@
       function floodFill(startX, startY, color, visited) {
         const stack = [[startX, startY]];
         const group = [];
+
         while (stack.length) {
           const [x, y] = stack.pop();
-          // Conflict resolution: validate bounds/color before visited bookkeeping
           if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
           if (board[y][x] !== color) continue;
 
@@ -219,6 +219,7 @@
           group.push([x, y]);
           stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
         }
+
         return group;
       }
 
