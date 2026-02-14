@@ -210,6 +210,7 @@
         while (stack.length) {
           const [x, y] = stack.pop();
 
+          // Keep this order: validate cell first, then mark visited.
           if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
           if (board[y][x] !== color) continue;
 
