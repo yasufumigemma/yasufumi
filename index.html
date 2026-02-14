@@ -206,6 +206,22 @@
       function floodFill(startX, startY, color, visited) {
         const stack = [[startX, startY]];
         const group = [];
+
+        while (stack.length) {
+          const [x, y] = stack.pop();
+
+          // Keep this order: validate cell first, then mark visited.
+          if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
+          if (board[y][x] !== color) continue;
+
+          const key = `${x},${y}`;
+          if (visited.has(key)) continue;
+          visited.add(key);
+
+          group.push([x, y]);
+          stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+        }
+
         while (stack.length) {
           const [x, y] = stack.pop();
           const key = `${x},${y}`;
