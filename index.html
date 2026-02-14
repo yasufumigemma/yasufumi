@@ -136,7 +136,11 @@
       }
 
       function canPlace(cells) {
-        return cells.every(([x, y]) => x >= 0 && x < COLS && y >= 0 && y < ROWS && board[y][x] === 0);
+        return cells.every(([x, y]) => {
+          if (x < 0 || x >= COLS || y >= ROWS) return false;
+          if (y < 0) return true;
+          return board[y][x] === 0;
+        });
       }
 
       function tryMove(dx, dy) {
