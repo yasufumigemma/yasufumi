@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ぷよっぽい落ちゲー</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at top, #203050, #101523 70%);
+      }
+      .container {
+        display: flex;
+        gap: 24px;
+        align-items: flex-start;
+        padding: 20px;
+      }
+      canvas {
+        border: 3px solid #9bc7ff;
+        border-radius: 8px;
+        background: linear-gradient(#14233d, #0f1626);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+      }
+      .panel {
+        width: 220px;
+        background: rgba(15, 24, 40, 0.8);
+        border: 2px solid #476694;
+        border-radius: 10px;
+        padding: 12px 16px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.2rem;
+      }
+      .meta {
+        font-size: 0.95rem;
+        line-height: 1.7;
+      }
+      .controls {
+        margin-top: 14px;
+        font-size: 0.85rem;
+        color: #c6d8ff;
+      }
+      button {
+        margin-top: 10px;
+        width: 100%;
+        padding: 8px;
+        border: 0;
+        border-radius: 8px;
+        background: #5d9cff;
+        color: #0b1a32;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:hover {
+        filter: brightness(1.1);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="game" width="240" height="480" aria-label="ゲーム画面"></canvas>
+      <div class="panel">
+        <h1>ぷよっぽい落ちゲー</h1>
+        <div class="meta">
+          Score: <span id="score">0</span><br />
+          Chain: <span id="chain">0</span><br />
+          状態: <span id="state">プレイ中</span>
+        </div>
+        <button id="restart">リスタート</button>
+        <div class="controls">
+          ← → : 移動<br />
+          ↓ : ソフトドロップ<br />
+          Z / X : 回転<br />
+          Space: ハードドロップ
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const COLS = 6;
+      const ROWS = 12;
+      const CELL = 40;
+      const COLORS = ["#ff5f76", "#4cc9f0", "#ffe66d", "#9dff70", "#b08cff"];
+      const board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const scoreEl = document.getElementById("score");
+      const chainEl = document.getElementById("chain");
+      const stateEl = document.getElementById("state");
+      const restartBtn = document.getElementById("restart");
+
+      let score = 0;
+      let chain = 0;
+      let gameOver = false;
+      let dropTimer = 0;
+      let lastTime = 0;
+      const DROP_INTERVAL = 650;
+
+      function randomColor() {
+        return Math.floor(Math.random() * COLORS.length) + 1;
+      }
+
+      function newPair() {
+        return {
+          x: 2,
+          y: 0,
+          rot: 0,
+          a: randomColor(),
+          b: randomColor(),
+        };
+      }
+
+      let current = newPair();
+
+      function pairCells(pair = current) {
+        const offsets = [
+          [0, -1],
+          [1, 0],
+          [0, 1],
+          [-1, 0],
+        ];
+        const [ox, oy] = offsets[pair.rot];
+        return [
+          [pair.x, pair.y, pair.a],
+          [pair.x + ox, pair.y + oy, pair.b],
+        ];
+      }
+
+      function canPlace(cells) {
+        return cells.every(([x, y]) => {
+          if (x < 0 || x >= COLS || y >= ROWS) return false;
+          if (y < 0) return true;
+          return board[y][x] === 0;
+        });
+      }
+
+      function tryMove(dx, dy) {
+        const moved = { ...current, x: current.x + dx, y: current.y + dy };
+        if (canPlace(pairCells(moved))) {
+          current = moved;
+          return true;
+        }
+        return false;
+      }
+
+      function tryRotate(dir) {
+        const rotated = { ...current, rot: (current.rot + dir + 4) % 4 };
+        if (canPlace(pairCells(rotated))) {
+          current = rotated;
+          return;
+        }
+        // wall kick
+        for (const kick of [-1, 1, -2, 2]) {
+          const kicked = { ...rotated, x: rotated.x + kick };
+          if (canPlace(pairCells(kicked))) {
+            current = kicked;
+            return;
+          }
+        }
+      }
+
+      function lockPair() {
+        for (const [x, y, c] of pairCells()) {
+          if (y < 0) {
+            gameOver = true;
+            stateEl.textContent = "ゲームオーバー";
+            return;
+          }
+          board[y][x] = c;
+        }
+        resolveBoard();
+        spawnNext();
+      }
+
+      function spawnNext() {
+        current = newPair();
+        if (!canPlace(pairCells())) {
+          gameOver = true;
+          stateEl.textContent = "ゲームオーバー";
+        }
+      }
+
+      function applyGravity() {
+        for (let x = 0; x < COLS; x++) {
+          let write = ROWS - 1;
+          for (let y = ROWS - 1; y >= 0; y--) {
+            if (board[y][x] !== 0) {
+              board[write][x] = board[y][x];
+              if (write !== y) board[y][x] = 0;
+              write--;
+            }
+          }
+          while (write >= 0) board[write--][x] = 0;
+        }
+      }
+
+      function floodFill(startX, startY, color, visited) {
+        const stack = [[startX, startY]];
+        const group = [];
+        while (stack.length) {
+          const [x, y] = stack.pop();
+          const key = `${x},${y}`;
+          if (visited.has(key)) continue;
+          visited.add(key);
+          if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
+          if (board[y][x] !== color) continue;
+          group.push([x, y]);
+          stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+        }
+        return group;
+      }
+
+      function clearMatches() {
+        const visited = new Set();
+        const toClear = [];
+
+        for (let y = 0; y < ROWS; y++) {
+          for (let x = 0; x < COLS; x++) {
+            const color = board[y][x];
+            if (!color || visited.has(`${x},${y}`)) continue;
+            const group = floodFill(x, y, color, visited);
+            if (group.length >= 4) toClear.push(...group);
+          }
+        }
+
+        toClear.forEach(([x, y]) => (board[y][x] = 0));
+        return toClear.length;
+      }
+
+      function resolveBoard() {
+        let chainCount = 0;
+        while (true) {
+          const removed = clearMatches();
+          if (!removed) break;
+          chainCount++;
+          score += removed * 10 * chainCount;
+          applyGravity();
+        }
+        chain = chainCount;
+        scoreEl.textContent = score;
+        chainEl.textContent = chain;
+      }
+
+      function hardDrop() {
+        while (tryMove(0, 1));
+        lockPair();
+      }
+
+      function drawBlob(x, y, colorIndex) {
+        const px = x * CELL;
+        const py = y * CELL;
+        const r = CELL * 0.38;
+        const cx = px + CELL / 2;
+        const cy = py + CELL / 2;
+        ctx.fillStyle = COLORS[colorIndex - 1];
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.35)";
+        ctx.beginPath();
+        ctx.arc(cx - 8, cy - 10, r * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawGrid() {
+        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+        for (let x = 0; x <= COLS; x++) {
+          ctx.beginPath();
+          ctx.moveTo(x * CELL, 0);
+          ctx.lineTo(x * CELL, ROWS * CELL);
+          ctx.stroke();
+        }
+        for (let y = 0; y <= ROWS; y++) {
+          ctx.beginPath();
+          ctx.moveTo(0, y * CELL);
+          ctx.lineTo(COLS * CELL, y * CELL);
+          ctx.stroke();
+        }
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawGrid();
+        for (let y = 0; y < ROWS; y++) {
+          for (let x = 0; x < COLS; x++) {
+            const cell = board[y][x];
+            if (cell) drawBlob(x, y, cell);
+          }
+        }
+        for (const [x, y, c] of pairCells()) {
+          if (y >= 0) drawBlob(x, y, c);
+        }
+      }
+
+      function update(time = 0) {
+        const dt = time - lastTime;
+        lastTime = time;
+        if (!gameOver) {
+          dropTimer += dt;
+          if (dropTimer > DROP_INTERVAL) {
+            if (!tryMove(0, 1)) lockPair();
+            dropTimer = 0;
+          }
+        }
+        draw();
+        requestAnimationFrame(update);
+      }
+
+      window.addEventListener("keydown", (e) => {
+        if (gameOver) return;
+        if (e.key === "ArrowLeft") tryMove(-1, 0);
+        else if (e.key === "ArrowRight") tryMove(1, 0);
+        else if (e.key === "ArrowDown") {
+          if (!tryMove(0, 1)) lockPair();
+        } else if (e.key.toLowerCase() === "z") tryRotate(-1);
+        else if (e.key.toLowerCase() === "x" || e.key === "ArrowUp") tryRotate(1);
+        else if (e.code === "Space") hardDrop();
+      });
+
+      restartBtn.addEventListener("click", () => {
+        for (let y = 0; y < ROWS; y++) board[y].fill(0);
+        score = 0;
+        chain = 0;
+        gameOver = false;
+        dropTimer = 0;
+        scoreEl.textContent = "0";
+        chainEl.textContent = "0";
+        stateEl.textContent = "プレイ中";
+        current = newPair();
+      });
+
+      requestAnimationFrame(update);
+    </script>
+  </body>
+</html>
